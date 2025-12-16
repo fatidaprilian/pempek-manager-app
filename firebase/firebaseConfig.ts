@@ -5,7 +5,7 @@ import {
   initializeAuth,
 } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
-import { getStorage } from "firebase/storage"; // ⬅️ NEW
+import { getStorage } from "firebase/storage";
 
 // firebase/firebaseConfig.ts
 const firebaseConfig = {
@@ -13,12 +13,12 @@ const firebaseConfig = {
   authDomain: "anisea-anime.firebaseapp.com",
   databaseURL: "https://anisea-anime.firebaseio.com",
   projectId: "anisea-anime",
-  storageBucket: "anisea-anime.appspot.com", // ⬅️ INI YANG PENTING
+  // 👇 PASTIKAN INI BENAR (firebasestorage.app, BUKAN appspot.com)
+  storageBucket: "anisea-anime.appspot.com",
   messagingSenderId: "178354570669",
   appId: "1:178354570669:web:fa781e3b6d4955cdce0d24",
   measurementId: "G-MQ55R1NEY0",
 };
-
 
 // --- Avoid double app init ---
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
@@ -32,6 +32,6 @@ export const auth = initializeAuth(app, {
 export const db = getFirestore(app);
 
 // --- Storage ---
-export const storage = getStorage(app); // ⬅️ NEW
+export const storage = getStorage(app);
 
 export default app;

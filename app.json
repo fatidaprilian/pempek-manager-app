@@ -4,7 +4,7 @@
     "slug": "pempek-manager-app",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/logo.png",
     "scheme": "pempekmanagerapp",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
@@ -12,13 +12,14 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.kelompok1.pempekmanager",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "edgeToEdgeEnabled": true,
+      "edgeToEdgeEnabled": false,
       "predictiveBackGestureEnabled": false
     },
     "web": {
@@ -43,6 +44,12 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "f998f4b4-b0ea-43ef-9627-ebf65b33398d"
+      }
     }
   }
 }

@@ -1,9 +1,9 @@
-// app/(tabs)/_layout.tsx
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { Tabs } from "expo-router";
 import React from "react";
-import { Text, View } from "react-native";
+import { Platform, Text, View } from "react-native";
 
+// --- Komponen Icon Custom ---
 type TabIconProps = {
   label: string;
   iconName: React.ComponentProps<typeof MaterialCommunityIcons>["name"];
@@ -15,30 +15,34 @@ function TabIcon({ label, iconName, color, focused }: TabIconProps) {
   return (
     <View
       style={{
+        width: 80,              // slot tiap tab, cukup lebar buat teks
         alignItems: "center",
         justifyContent: "center",
-        gap: 4,
       }}
     >
+      {/* ICON BULAT, POSISI TENGAH */}
       <View
         style={{
-          paddingHorizontal: focused ? 12 : 10,
-          paddingVertical: focused ? 6 : 4,
-          borderRadius: 999,
-          backgroundColor: focused
-            ? "rgba(34,197,94,0.16)"
-            : "rgba(15,23,42,0.96)",
-          borderWidth: focused ? 1 : 0,
-          borderColor: focused ? "#22c55e" : "transparent",
+          width: 36,
+          height: 36,
+          borderRadius: 18,
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: focused ? "rgba(34,197,94,0.15)" : "transparent",
         }}
       >
-        <MaterialCommunityIcons name={iconName} size={20} color={color} />
+        <MaterialCommunityIcons name={iconName} size={22} color={color} />
       </View>
+
+      {/* LABEL – boleh 2 baris, TIDAK di-ellipsis */}
       <Text
+        numberOfLines={2} // biar kalau "Pengaturan" / "Laporan" cukup
         style={{
+          marginTop: 4,
           fontSize: 11,
-          color: focused ? "#bbf7d0" : "#6b7280",
+          color: color,
           fontWeight: focused ? "600" : "400",
+          textAlign: "center",
         }}
       >
         {label}
@@ -52,43 +56,42 @@ export default function TabsLayout() {
     <Tabs
       screenOptions={{
         headerShown: false,
+        tabBarShowLabel: false,
         tabBarActiveTintColor: "#22c55e",
         tabBarInactiveTintColor: "#6b7280",
         tabBarHideOnKeyboard: true,
         tabBarStyle: {
           position: "absolute",
-          left: 16,
-          right: 16,
-          bottom: 20, // naik dikit dari nav 3 tombol
-          borderRadius: 999,
+          bottom: 25,
+          left: 20,
+          right: 20,
+          elevation: 10,
           backgroundColor: "rgba(15,23,42,0.98)",
+          borderRadius: 24,
+          height: 90,
           borderWidth: 1,
-          borderColor: "#1f2937",
-          height: 70,
-          paddingHorizontal: 24,
-          paddingTop: 8,
-          paddingBottom: 10,
+          borderColor: "#1e293b",
           shadowColor: "#000",
-          shadowOffset: { width: 0, height: 10 },
-          shadowOpacity: 0.35,
-          shadowRadius: 20,
-          elevation: 18,
+          shadowOffset: { width: 0, height: 5 },
+          shadowOpacity: 0.3,
+          shadowRadius: 10,
+          paddingTop: 20,
+          paddingBottom: Platform.OS === "ios" ? 18 : 14,
         },
-        tabBarLabelStyle: {
-          fontSize: 11,
+        tabBarItemStyle: {
+          justifyContent: "flex-end", // konten agak dikebawahin
+          alignItems: "center",
         },
       }}
     >
-      {/* NOTE:
-         Karena file kamu adalah app/(tabs)/dashboard/index.tsx
-         nama route-nya "dashboard/index", bukan "dashboard" */}
+      {/* 1. DASHBOARD */}
       <Tabs.Screen
         name="dashboard/index"
         options={{
           title: "Dashboard",
           tabBarIcon: ({ color, focused }) => (
             <TabIcon
-              label="Dashboard"
+              label="Beranda"
               iconName="view-dashboard-outline"
               color={color}
               focused={focused}
@@ -97,6 +100,23 @@ export default function TabsLayout() {
         }}
       />
 
+      {/* 2. TRANSAKSI */}
+      <Tabs.Screen
+        name="transactions/index"
+        options={{
+          title: "Transaksi",
+          tabBarIcon: ({ color, focused }) => (
+            <TabIcon
+              label="Kasir"
+              iconName="calculator-variant"
+              color={color}
+              focused={focused}
+            />
+          ),
+        }}
+      />
+
+      {/* 3. LAPORAN */}
       <Tabs.Screen
         name="reports/index"
         options={{
@@ -112,14 +132,14 @@ export default function TabsLayout() {
         }}
       />
 
-      {/* TAB 3: Pengaturan */}
+      {/* 4. PENGATURAN */}
       <Tabs.Screen
         name="settings/index"
         options={{
           title: "Pengaturan",
           tabBarIcon: ({ color, focused }) => (
             <TabIcon
-              label="Pengaturan"
+              label="Akun"
               iconName="cog-outline"
               color={color}
               focused={focused}
@@ -127,6 +147,10 @@ export default function TabsLayout() {
           ),
         }}
       />
+
+      {/* Sembunyikan tab hantu */}
+      <Tabs.Screen name="index" options={{ href: null }} />
+      <Tabs.Screen name="explore" options={{ href: null }} />
     </Tabs>
   );
 }

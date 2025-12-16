@@ -1,5 +1,7 @@
+import { MaterialCommunityIcons } from "@expo/vector-icons";
 import React, { useEffect, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   FlatList,
   Image,
@@ -16,9 +18,10 @@ import {
 import DashboardHeader from "../../../components/dashboard/DashboardHeader";
 import SummaryCards from "../../../components/dashboard/SummaryCards";
 
+import { decode } from 'base64-arraybuffer';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from "expo-image-picker";
-import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
-import { storage } from "../../../firebase/firebaseConfig";
+import { supabase } from "../../../supabaseConfig"; // Pastikan path ini benar
 
 import {
   PempekItem,
@@ -101,7 +104,6 @@ export default function DashboardPempek() {
 
   useEffect(() => {
     loadData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const resetForm = () => {
@@ -116,7 +118,7 @@ export default function DashboardPempek() {
 
   const handleSavePempek = async () => {
     if (!name.trim() || !stock.trim() || !price.trim()) {
-      Alert.alert("Error", "Nama, stok, dan harga wajib diisi.");
+      Alert.alert("Perhatian", "Nama, stok, dan harga wajib diisi.");
       return;
     }
 
@@ -138,22 +140,18 @@ export default function DashboardPempek() {
     try {
       setSaving(true);
 
+      const payload = {
+        name: name.trim(),
+        stock: stockNum,
+        price: priceNum,
+        category: finalCategory,
+        imageUrl: imageUrl ?? null,
+      };
+
       if (editingId) {
-        await updatePempek(editingId, {
-          name: name.trim(),
-          stock: stockNum,
-          price: priceNum,
-          category: finalCategory,
-          imageUrl: imageUrl ?? null,
-        });
+        await updatePempek(editingId, payload);
       } else {
-        await createPempek({
-          name: name.trim(),
-          stock: stockNum,
-          price: priceNum,
-          category: finalCategory,
-          imageUrl: imageUrl ?? null,
-        });
+        await createPempek(payload);
       }
 
       resetForm();
@@ -188,6 +186,7 @@ export default function DashboardPempek() {
           onPress: async () => {
             try {
               await deletePempekById(item.id);
+              // Optimistic update biar cepet
               setItems((prev) => {
                 const updated = prev.filter((p) => p.id !== item.id);
                 recomputeSummary(updated);
@@ -204,46 +203,62 @@ export default function DashboardPempek() {
     );
   };
 
+  // --- UPLOAD KE SUPABASE (Bucket: image_pemek) ---
   const handlePickImage = async () => {
     try {
       setImageUploading(true);
 
-      const { status } =
-        await ImagePicker.requestMediaLibraryPermissionsAsync();
+      // 1. Cek Permission
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== "granted") {
-        Alert.alert(
-          "Izin dibutuhkan",
-          "Izin akses galeri diperlukan untuk upload foto."
-        );
+        Alert.alert("Izin Ditolak", "Izin akses galeri diperlukan untuk upload foto.");
         return;
       }
 
+      // 2. Buka Galeri
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 0.7,
+        mediaTypes: 'images', // Pakai string 'images' biar aman
+        allowsEditing: true,
+        quality: 0.5, // Kompresi biar ringan
       });
 
       if (result.canceled || !result.assets || result.assets.length === 0) {
+        setImageUploading(false);
         return;
       }
 
       const asset = result.assets[0];
+      const ext = asset.uri.split('.').pop()?.toLowerCase() || 'jpeg';
+      const fileName = `${Date.now()}.${ext}`;
+      const filePath = `${fileName}`; // Path file di bucket
 
-      const response = await fetch(asset.uri);
-      const blob = await response.blob();
+      // 3. Baca file jadi Base64
+      const base64 = await FileSystem.readAsStringAsync(asset.uri, {
+        encoding: 'base64',
+      });
 
-      const fileName = `pempek-${Date.now()}-${Math.random()
-        .toString(36)
-        .slice(2)}`;
-      const storageRef = ref(storage, `pempek-images/${fileName}`);
+      // 4. Upload ke Supabase
+      const { data, error } = await supabase.storage
+        .from('Image_pempek') // Nama bucket sesuai request Anda
+        .upload(filePath, decode(base64), {
+          contentType: asset.mimeType || 'image/jpeg',
+        });
 
-      await uploadBytes(storageRef, blob);
-      const downloadUrl = await getDownloadURL(storageRef);
+      if (error) {
+        throw error;
+      }
 
-      setImageUrl(downloadUrl);
-    } catch (error) {
+      // 5. Ambil Public URL
+      const { data: urlData } = supabase.storage
+        .from('Image_pempek')
+        .getPublicUrl(filePath);
+
+      setImageUrl(urlData.publicUrl);
+      console.log("Upload sukses:", urlData.publicUrl);
+
+    } catch (error: any) {
       console.log("Error upload image:", error);
-      Alert.alert("Error", "Gagal mengupload foto.");
+      Alert.alert("Gagal Upload", error.message || "Terjadi kesalahan saat upload.");
     } finally {
       setImageUploading(false);
     }
@@ -257,63 +272,62 @@ export default function DashboardPempek() {
         );
 
   const renderItem = ({ item }: { item: PempekItem }) => (
-    <View>
-      <View style={styles.card}>
-        <View style={styles.cardLeft}>
-          <View style={styles.cardChipRow}>
-            <View style={styles.cardBadge}>
-              <Text style={styles.cardBadgeText}>
-                {item.stock <= 0 ? "Habis" : "Stok"}
-              </Text>
-            </View>
-            <View style={styles.cardCategoryChip}>
-              <Text style={styles.cardCategoryText}>
-                {normalizeCategory(item.category)}
-              </Text>
-            </View>
+    <View style={styles.card}>
+      <View style={styles.cardLeft}>
+        <View style={styles.cardHeader}>
+          <View style={[styles.badge, item.stock <= 0 ? styles.badgeError : styles.badgeSuccess]}>
+            <Text style={[styles.badgeText, item.stock <= 0 ? styles.badgeTextError : styles.badgeTextSuccess]}>
+              {item.stock <= 0 ? "Habis" : `${item.stock} Stok`}
+            </Text>
           </View>
+          <View style={styles.categoryBadge}>
+            <Text style={styles.categoryText}>
+              {normalizeCategory(item.category)}
+            </Text>
+          </View>
+        </View>
 
+        <View style={styles.cardBody}>
           {item.imageUrl ? (
             <Image
               source={{ uri: item.imageUrl }}
               style={styles.itemImage}
               resizeMode="cover"
             />
-          ) : null}
-
-          <Text style={styles.itemName}>{item.name}</Text>
-          <Text style={styles.itemInfo}>Stok: {item.stock}</Text>
-          <Text style={styles.itemInfoPrice}>
-            Harga:{" "}
-            <Text style={styles.itemInfoPriceHighlight}>
+          ) : (
+            <View style={[styles.itemImage, styles.itemImagePlaceholder]}>
+              <MaterialCommunityIcons name="food" size={24} color="#4b5563" />
+            </View>
+          )}
+          
+          <View style={styles.itemContent}>
+            <Text style={styles.itemName}>{item.name}</Text>
+            <Text style={styles.itemPrice}>
               Rp {item.price.toLocaleString("id-ID")}
             </Text>
-          </Text>
+          </View>
         </View>
-        <View style={styles.cardButtons}>
-          <TouchableOpacity
-            style={[styles.smallButton, styles.editButton]}
-            onPress={() => handleEdit(item)}
-          >
-            <Text style={styles.editText}>Edit</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.smallButton, styles.deleteButton]}
-            onPress={() => handleDelete(item)}
-          >
-            <Text style={styles.deleteText}>Hapus</Text>
-          </TouchableOpacity>
-        </View>
+      </View>
+
+      <View style={styles.cardActions}>
+        <TouchableOpacity
+          style={[styles.actionButton, styles.editButton]}
+          onPress={() => handleEdit(item)}
+        >
+          <MaterialCommunityIcons name="pencil" size={16} color="#fff" />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.actionButton, styles.deleteButton]}
+          onPress={() => handleDelete(item)}
+        >
+          <MaterialCommunityIcons name="trash-can" size={16} color="#fff" />
+        </TouchableOpacity>
       </View>
     </View>
   );
 
-  const formTitle = editingId ? "Edit Pempek" : "Tambah Pempek";
-  const saveLabel = saving
-    ? "Menyimpan..."
-    : editingId
-    ? "Simpan Perubahan"
-    : "Simpan";
+  const formTitle = editingId ? "Edit Produk" : "Tambah Produk Baru";
+  const saveLabel = saving ? "Menyimpan..." : editingId ? "Simpan Perubahan" : "Simpan Produk";
 
   return (
     <KeyboardAvoidingView
@@ -325,133 +339,124 @@ export default function DashboardPempek() {
         <View style={styles.bottomGlow} />
 
         <View style={styles.container}>
-          {/* HEADER */}
           <DashboardHeader />
 
-          {/* RINGKASAN */}
           <SummaryCards
             totalItems={totalItems}
             totalStock={totalStock}
             totalValue={totalValue}
           />
 
-          {/* FORM */}
+          {/* TOMBOL TAMBAH / FORM */}
           {showForm ? (
-            <View style={styles.formCard}>
-              <View style={styles.formHeaderRow}>
-                <Text style={styles.formTitle}>{formTitle}</Text>
-                {editingId && (
-                  <Text style={styles.formModeLabel}>Mode edit</Text>
-                )}
+            <View style={styles.formContainer}>
+              <View style={styles.formHeader}>
+                <Text style={styles.formTitleText}>{formTitle}</Text>
+                <TouchableOpacity onPress={resetForm}>
+                  <MaterialCommunityIcons name="close" size={20} color="#9ca3af" />
+                </TouchableOpacity>
               </View>
 
-              <View style={styles.fieldGroup}>
-                <Text style={styles.label}>Nama Pempek</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="mis. Kapal Selam"
-                  placeholderTextColor="#6b7280"
-                  value={name}
-                  onChangeText={setName}
-                />
-              </View>
+              <View style={styles.formBody}>
+                <View style={styles.inputGroup}>
+                  <Text style={styles.label}>Nama Pempek</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Contoh: Kapal Selam Besar"
+                    placeholderTextColor="#64748b"
+                    value={name}
+                    onChangeText={setName}
+                  />
+                </View>
 
-              <View style={styles.fieldGroup}>
-                <Text style={styles.label}>Kategori</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="mis. Goreng, Rebus, Paket, Lainnya"
-                  placeholderTextColor="#6b7280"
-                  value={category}
-                  onChangeText={setCategory}
-                />
-              </View>
+                <View style={styles.inputGroup}>
+                  <Text style={styles.label}>Kategori</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Contoh: Goreng / Rebus / Paket"
+                    placeholderTextColor="#64748b"
+                    value={category}
+                    onChangeText={setCategory}
+                  />
+                </View>
 
-              {/* UPLOAD FOTO */}
-              <View style={styles.fieldGroup}>
-                <Text style={styles.label}>Foto Pempek (opsional)</Text>
-
-                {imageUrl ? (
-                  <View style={styles.imagePreviewRow}>
-                    <Image
-                      source={{ uri: imageUrl }}
-                      style={styles.previewImage}
-                      resizeMode="cover"
+                <View style={styles.row}>
+                  <View style={[styles.inputGroup, { flex: 1, marginRight: 8 }]}>
+                    <Text style={styles.label}>Stok</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="0"
+                      placeholderTextColor="#64748b"
+                      keyboardType="number-pad"
+                      value={stock}
+                      onChangeText={setStock}
                     />
-                    <TouchableOpacity
-                      style={[styles.formButton, styles.cancelButton]}
-                      onPress={() => setImageUrl(null)}
-                      disabled={imageUploading}
-                    >
-                      <Text style={styles.cancelText}>Hapus</Text>
-                    </TouchableOpacity>
                   </View>
-                ) : null}
+                  <View style={[styles.inputGroup, { flex: 1.5 }]}>
+                    <Text style={styles.label}>Harga (Rp)</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="0"
+                      placeholderTextColor="#64748b"
+                      keyboardType="number-pad"
+                      value={price}
+                      onChangeText={setPrice}
+                    />
+                  </View>
+                </View>
+
+                {/* UPLOAD IMAGE AREA */}
+                <View style={styles.inputGroup}>
+                  <Text style={styles.label}>Foto Produk</Text>
+                  <View style={styles.imageUploader}>
+                    {imageUrl ? (
+                      <View style={styles.imagePreviewContainer}>
+                        <Image source={{ uri: imageUrl }} style={styles.uploadedImage} />
+                        <TouchableOpacity 
+                          style={styles.removeImageButton}
+                          onPress={() => setImageUrl(null)}
+                        >
+                          <MaterialCommunityIcons name="trash-can" size={14} color="#fff" />
+                        </TouchableOpacity>
+                      </View>
+                    ) : (
+                      <TouchableOpacity 
+                        style={styles.uploadPlaceholder} 
+                        onPress={handlePickImage}
+                        disabled={imageUploading}
+                      >
+                        {imageUploading ? (
+                          <ActivityIndicator color="#22c55e" />
+                        ) : (
+                          <>
+                            <MaterialCommunityIcons name="camera-plus" size={24} color="#64748b" />
+                            <Text style={styles.uploadText}>Pilih Foto</Text>
+                          </>
+                        )}
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                </View>
 
                 <TouchableOpacity
                   style={[
-                    styles.formButton,
-                    styles.pickImageButton,
-                    { marginTop: imageUrl ? 8 : 0 },
-                  ]}
-                  onPress={handlePickImage}
-                  disabled={imageUploading}
-                >
-                  <Text style={styles.pickImageText}>
-                    {imageUploading ? "Mengupload..." : "Pilih Foto dari Galeri"}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.row2}>
-                <View style={{ flex: 1, marginRight: 6 }}>
-                  <Text style={styles.label}>Stok</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="contoh: 10"
-                    placeholderTextColor="#6b7280"
-                    keyboardType="number-pad"
-                    value={stock}
-                    onChangeText={setStock}
-                  />
-                </View>
-                <View style={{ flex: 1, marginLeft: 6 }}>
-                  <Text style={styles.label}>Harga (Rp)</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="contoh: 15000"
-                    placeholderTextColor="#6b7280"
-                    keyboardType="number-pad"
-                    value={price}
-                    onChangeText={setPrice}
-                  />
-                </View>
-              </View>
-
-              <View style={styles.formButtonRow}>
-                <TouchableOpacity
-                  style={[styles.formButton, styles.cancelButton]}
-                  onPress={resetForm}
-                  disabled={saving}
-                >
-                  <Text style={styles.cancelText}>Batal</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[
-                    styles.formButton,
-                    saving ? styles.saveButtonDisabled : styles.saveButton,
+                    styles.saveButton,
+                    saving && styles.saveButtonDisabled
                   ]}
                   onPress={handleSavePempek}
                   disabled={saving}
                 >
-                  <Text style={styles.saveText}>{saveLabel}</Text>
+                  {saving ? (
+                    <ActivityIndicator color="#022c22" size="small" />
+                  ) : (
+                    <Text style={styles.saveButtonText}>{saveLabel}</Text>
+                  )}
                 </TouchableOpacity>
               </View>
             </View>
           ) : (
             <TouchableOpacity
-              style={styles.addButton}
+              style={styles.fabButton}
               onPress={() => {
                 setEditingId(null);
                 setName("");
@@ -462,72 +467,60 @@ export default function DashboardPempek() {
                 setShowForm(true);
               }}
             >
-              <Text style={styles.addButtonText}>+ Tambah Pempek</Text>
+              <MaterialCommunityIcons name="plus" size={20} color="#022c22" />
+              <Text style={styles.fabText}>Tambah Pempek</Text>
             </TouchableOpacity>
           )}
 
-          {/* FILTER KATEGORI */}
-          <View style={styles.filterRow}>
-            <Text style={styles.filterLabel}>Filter kategori:</Text>
-            <View style={styles.filterChips}>
-              <TouchableOpacity
-                style={[
-                  styles.filterChip,
-                  selectedCategory === "Semua" && styles.filterChipActive,
-                ]}
-                onPress={() => setSelectedCategory("Semua")}
-              >
-                <Text
-                  style={[
-                    styles.filterChipText,
-                    selectedCategory === "Semua" &&
-                      styles.filterChipTextActive,
-                  ]}
-                >
-                  Semua
-                </Text>
-              </TouchableOpacity>
-
-              {availableCategories.map((cat) => (
-                <TouchableOpacity
-                  key={cat}
-                  style={[
-                    styles.filterChip,
-                    selectedCategory === cat && styles.filterChipActive,
-                  ]}
-                  onPress={() => setSelectedCategory(cat)}
-                >
-                  <Text
+          {/* FILTER & LIST */}
+          <View style={styles.listContainer}>
+            <View style={styles.filterContainer}>
+              <Text style={styles.sectionTitle}>Daftar Menu</Text>
+              <FlatList
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                data={["Semua", ...availableCategories]}
+                keyExtractor={(item) => item}
+                contentContainerStyle={{ paddingRight: 16 }}
+                renderItem={({ item }) => (
+                  <TouchableOpacity
                     style={[
-                      styles.filterChipText,
-                      selectedCategory === cat && styles.filterChipTextActive,
+                      styles.filterPill,
+                      selectedCategory === item && styles.filterPillActive
                     ]}
+                    onPress={() => setSelectedCategory(item)}
                   >
-                    {cat}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+                    <Text
+                      style={[
+                        styles.filterPillText,
+                        selectedCategory === item && styles.filterPillTextActive
+                      ]}
+                    >
+                      {item}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              />
             </View>
-          </View>
 
-          {/* LIST */}
-          <Text style={styles.listTitle}>Daftar pempek</Text>
-          <FlatList
-            data={filteredItems}
-            keyExtractor={(item) => item.id}
-            renderItem={renderItem}
-            refreshControl={
-              <RefreshControl refreshing={loading} onRefresh={loadData} />
-            }
-            contentContainerStyle={{ paddingBottom: 24 }}
-            ListEmptyComponent={
-              <Text style={styles.emptyText}>
-                {loading
-                  ? "Memuat data pempek..."
-                  : "Belum ada data pempek. Tambah dulu di atas."}
-              </Text>
-            }
-          />
+            <FlatList
+              data={filteredItems}
+              keyExtractor={(item) => item.id}
+              renderItem={renderItem}
+              refreshControl={
+                <RefreshControl refreshing={loading} onRefresh={loadData} tintColor="#22c55e" />
+              }
+              contentContainerStyle={{ paddingBottom: 120 }}
+              ListEmptyComponent={
+                <View style={styles.emptyState}>
+                  <MaterialCommunityIcons name="food-off" size={40} color="#334155" />
+                  <Text style={styles.emptyText}>
+                    {loading ? "Memuat data..." : "Belum ada data pempek."}
+                  </Text>
+                </View>
+              }
+            />
+          </View>
         </View>
       </View>
     </KeyboardAvoidingView>
@@ -541,259 +534,264 @@ const styles = StyleSheet.create({
   },
   topGlow: {
     position: "absolute",
-    top: -80,
-    left: -40,
-    width: 220,
-    height: 220,
+    top: -100,
+    left: -50,
+    width: 300,
+    height: 300,
     borderRadius: 999,
-    backgroundColor: "rgba(34,197,94,0.10)",
+    backgroundColor: "rgba(34,197,94,0.08)",
   },
   bottomGlow: {
     position: "absolute",
-    bottom: -120,
-    right: -60,
-    width: 260,
-    height: 260,
+    bottom: -100,
+    right: -50,
+    width: 300,
+    height: 300,
     borderRadius: 999,
-    backgroundColor: "rgba(56,189,248,0.10)",
+    backgroundColor: "rgba(56,189,248,0.08)",
   },
   container: {
     flex: 1,
     paddingHorizontal: 16,
-    paddingTop: 32,
+    paddingTop: 40,
   },
-  addButton: {
-    backgroundColor: "#22c55e",
-    borderRadius: 999,
-    paddingVertical: 10,
+  
+  // --- FORM STYLES ---
+  formContainer: {
+    backgroundColor: "#0f172a",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#1e293b",
+    marginBottom: 16,
+    overflow: 'hidden',
+  },
+  formHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#1e293b",
+    backgroundColor: "#1e293b50",
   },
-  addButtonText: {
-    color: "#022c22",
-    fontWeight: "700",
+  formTitleText: {
+    color: "#f8fafc",
+    fontWeight: "600",
     fontSize: 14,
   },
-  formCard: {
-    backgroundColor: "rgba(15,23,42,0.96)",
-    borderRadius: 16,
+  formBody: {
+    padding: 16,
+  },
+  inputGroup: {
+    marginBottom: 12,
+  },
+  row: {
+    flexDirection: "row",
+    marginBottom: 12,
+  },
+  label: {
+    color: "#94a3b8",
+    fontSize: 11,
+    marginBottom: 6,
+    fontWeight: "500",
+  },
+  input: {
+    backgroundColor: "#020617",
+    borderWidth: 1,
+    borderColor: "#334155",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: "#f8fafc",
+    fontSize: 13,
+  },
+  imageUploader: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  uploadPlaceholder: {
+    width: 80,
+    height: 80,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#334155",
+    borderStyle: "dashed",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#0f172a",
+  },
+  uploadText: {
+    color: "#64748b",
+    fontSize: 10,
+    marginTop: 4,
+  },
+  imagePreviewContainer: {
+    position: 'relative',
+  },
+  uploadedImage: {
+    width: 80,
+    height: 80,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#334155",
+  },
+  removeImageButton: {
+    position: 'absolute',
+    top: -6,
+    right: -6,
+    backgroundColor: "#ef4444",
+    borderRadius: 999,
+    padding: 4,
+    borderWidth: 2,
+    borderColor: "#0f172a",
+  },
+  saveButton: {
+    backgroundColor: "#22c55e",
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: "center",
+    marginTop: 8,
+  },
+  saveButtonDisabled: {
+    opacity: 0.7,
+  },
+  saveButtonText: {
+    color: "#022c22",
+    fontWeight: "700",
+    fontSize: 13,
+  },
+
+  // --- FAB & FILTER ---
+  fabButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: "#22c55e",
+    paddingVertical: 10,
+    borderRadius: 999,
+    marginBottom: 20,
+    gap: 6,
+  },
+  fabText: {
+    color: "#022c22",
+    fontWeight: "700",
+    fontSize: 13,
+  },
+  listContainer: {
+    flex: 1,
+  },
+  filterContainer: {
+    marginBottom: 12,
+  },
+  sectionTitle: {
+    color: "#e2e8f0",
+    fontSize: 16,
+    fontWeight: "700",
+    marginBottom: 10,
+  },
+  filterPill: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "#1e293b",
+    marginRight: 8,
+    borderWidth: 1,
+    borderColor: "#334155",
+  },
+  filterPillActive: {
+    backgroundColor: "rgba(34,197,94,0.15)",
+    borderColor: "#22c55e",
+  },
+  filterPillText: {
+    color: "#94a3b8",
+    fontSize: 12,
+  },
+  filterPillTextActive: {
+    color: "#4ade80",
+    fontWeight: "600",
+  },
+
+  // --- CARD STYLES ---
+  card: {
+    flexDirection: "row",
+    backgroundColor: "#0f172a",
+    borderRadius: 12,
     padding: 12,
     marginBottom: 12,
     borderWidth: 1,
     borderColor: "#1e293b",
-  },
-  formHeaderRow: {
-    flexDirection: "row",
     alignItems: "center",
-    marginBottom: 8,
-  },
-  formTitle: {
-    color: "#e5e7eb",
-    fontWeight: "600",
-    fontSize: 15,
-  },
-  formModeLabel: {
-    marginLeft: 8,
-    fontSize: 10,
-    color: "#f97316",
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#f97316",
-  },
-  fieldGroup: {
-    marginBottom: 10,
-  },
-  label: {
-    color: "#d1d5db",
-    fontSize: 12,
-    marginBottom: 4,
-  },
-  input: {
-    backgroundColor: "#020617",
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    color: "#f9fafb",
-    borderWidth: 1,
-    borderColor: "#1f2937",
-    fontSize: 13,
-  },
-  row2: {
-    flexDirection: "row",
-    marginBottom: 4,
-  },
-  formButtonRow: {
-    flexDirection: "row",
-    justifyContent: "flex-end",
-    marginTop: 6,
-    gap: 8,
-  },
-  formButton: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 999,
-  },
-  cancelButton: {
-    borderWidth: 1,
-    borderColor: "#4b5563",
-  },
-  cancelText: {
-    color: "#9ca3af",
-    fontSize: 12,
-  },
-  saveButton: {
-    backgroundColor: "#22c55e",
-  },
-  saveButtonDisabled: {
-    backgroundColor: "#16a34a",
-    opacity: 0.7,
-  },
-  saveText: {
-    color: "#022c22",
-    fontWeight: "600",
-    fontSize: 12,
-  },
-  pickImageButton: {
-    backgroundColor: "#0ea5e9",
-    alignSelf: "flex-start",
-  },
-  pickImageText: {
-    color: "#e0f2fe",
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  imagePreviewRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginBottom: 6,
-  },
-  previewImage: {
-    width: 56,
-    height: 56,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#1e293b",
-  },
-  filterRow: {
-    marginTop: 4,
-    marginBottom: 6,
-  },
-  filterLabel: {
-    color: "#9ca3af",
-    fontSize: 11,
-    marginBottom: 4,
-  },
-  filterChips: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
-  },
-  filterChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#1e293b",
-    backgroundColor: "rgba(15,23,42,0.9)",
-  },
-  filterChipActive: {
-    backgroundColor: "rgba(34,197,94,0.18)",
-    borderColor: "#22c55e",
-  },
-  filterChipText: {
-    color: "#9ca3af",
-    fontSize: 11,
-  },
-  filterChipTextActive: {
-    color: "#bbf7d0",
-    fontWeight: "600",
-  },
-  listTitle: {
-    color: "#9ca3af",
-    fontSize: 12,
-    marginBottom: 6,
-    marginTop: 8,
-  },
-  card: {
-    flexDirection: "row",
-    alignItems: "stretch",
-    backgroundColor: "rgba(15,23,42,0.96)",
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: "#1e293b",
   },
   cardLeft: {
     flex: 1,
   },
-  cardChipRow: {
+  cardHeader: {
+    flexDirection: "row",
+    gap: 6,
+    marginBottom: 8,
+  },
+  badge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  badgeSuccess: { backgroundColor: "rgba(34,197,94,0.1)" },
+  badgeError: { backgroundColor: "rgba(239,68,68,0.1)" },
+  badgeText: { fontSize: 10, fontWeight: "600" },
+  badgeTextSuccess: { color: "#4ade80" },
+  badgeTextError: { color: "#f87171" },
+  
+  categoryBadge: {
+    backgroundColor: "#1e293b",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  categoryText: {
+    color: "#94a3b8",
+    fontSize: 10,
+  },
+  cardBody: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    marginBottom: 4,
-  },
-  cardBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 999,
-    backgroundColor: "rgba(31,41,55,0.9)",
-  },
-  cardBadgeText: {
-    color: "#9ca3af",
-    fontSize: 10,
-  },
-  cardCategoryChip: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 999,
-    backgroundColor: "rgba(22,163,74,0.15)",
-  },
-  cardCategoryText: {
-    color: "#4ade80",
-    fontSize: 10,
+    gap: 12,
   },
   itemImage: {
-    width: 52,
-    height: 52,
-    borderRadius: 12,
-    marginBottom: 6,
-    borderWidth: 1,
-    borderColor: "#1e293b",
+    width: 48,
+    height: 48,
+    borderRadius: 8,
+    backgroundColor: "#1e293b",
+  },
+  itemImagePlaceholder: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  itemContent: {
+    justifyContent: "center",
   },
   itemName: {
-    color: "#e5e7eb",
-    fontSize: 16,
+    color: "#f8fafc",
+    fontSize: 14,
     fontWeight: "600",
+    marginBottom: 2,
   },
-  itemInfo: {
-    color: "#9ca3af",
-    fontSize: 13,
-    marginTop: 2,
-  },
-  itemInfoPrice: {
-    color: "#9ca3af",
-    fontSize: 13,
-    marginTop: 2,
-  },
-  itemInfoPriceHighlight: {
+  itemPrice: {
     color: "#22c55e",
-    fontWeight: "600",
+    fontSize: 13,
+    fontWeight: "700",
   },
-  cardButtons: {
+  cardActions: {
+    flexDirection: "column",
+    gap: 8,
+    marginLeft: 8,
+  },
+  actionButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    alignItems: "center",
     justifyContent: "center",
-    alignItems: "flex-end",
-    marginLeft: 10,
-    gap: 6,
-  },
-  smallButton: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
   },
   editButton: {
     backgroundColor: "#3b82f6",
@@ -801,20 +799,15 @@ const styles = StyleSheet.create({
   deleteButton: {
     backgroundColor: "#ef4444",
   },
-  editText: {
-    color: "#f9fafb",
-    fontSize: 11,
-    fontWeight: "600",
-  },
-  deleteText: {
-    color: "#f9fafb",
-    fontSize: 11,
-    fontWeight: "600",
+  emptyState: {
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 40,
+    opacity: 0.5,
   },
   emptyText: {
-    color: "#9ca3af",
-    textAlign: "center",
-    marginTop: 24,
+    color: "#94a3b8",
+    marginTop: 8,
     fontSize: 13,
   },
 });
